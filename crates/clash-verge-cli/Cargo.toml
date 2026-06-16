@@ -1,0 +1,16 @@
+[package]
+name = "clash-verge-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[features]
+default = []
+verge-dev = []
+
+[dependencies]
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+
+[lints]
+workspace = true

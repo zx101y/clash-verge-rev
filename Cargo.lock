@@ -1171,6 +1171,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "clash-verge-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "serde_yaml_ng",
+]
+
+[[package]]
 name = "clash-verge-draft"
 version = "0.1.0"
 dependencies = [

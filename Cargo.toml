@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "src-tauri",
+  "crates/clash-verge-cli",
   "crates/clash-verge-draft",
   "crates/clash-verge-logging",
   "crates/clash-verge-signal",
