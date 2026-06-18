@@ -1,18 +1,21 @@
 use super::resolve;
 use crate::{
-    cmd::is_port_in_use,
-    config::{Config, DEFAULT_PAC, IVerge},
+    cmd::{self, is_port_in_use},
+    config::{Config, DEFAULT_PAC, IProfiles, IVerge},
+    core::CoreManager,
     module::lightweight,
     process::AsyncHandler,
-    utils::window_manager::WindowManager,
+    utils::{dirs, window_manager::WindowManager},
 };
 use anyhow::{Result, bail};
+use clash_verge_cli_protocol::{CliRequest, CliResponse, TOKEN_FILE};
 use clash_verge_logging::{Type, logging, logging_error};
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use reqwest::ClientBuilder;
+use serde_json::{Value, json};
 use smartstring::alias::String;
-use std::time::Duration;
+use std::{fs, path::PathBuf, time::Duration};
 use tokio::sync::oneshot;
 use warp::Filter as _;
 
@@ -23,6 +26,173 @@ struct QueryParam {
 
 // 关闭 embedded server 的信号发送端
 static SHUTDOWN_SENDER: OnceCell<Mutex<Option<oneshot::Sender<()>>>> = OnceCell::new();
+
+fn cli_token_path() -> Result<PathBuf> {
+    Ok(dirs::app_home_dir()?.join(TOKEN_FILE))
+}
+
+fn generate_cli_token() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn ensure_cli_token() -> Result<String> {
+    let path = cli_token_path()?;
+    if let Ok(token) = fs::read_to_string(&path) {
+        let token = token.trim();
+        if !token.is_empty() {
+            return Ok(token.into());
+        }
+    }
+
+    let token = generate_cli_token()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, token.as_bytes())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(token)
+}
+
+fn authorized(authorization: Option<&str>, token: &str) -> bool {
+    authorization
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|value| value == token)
+}
+
+async fn resolve_profile_id(id_or_name: &str) -> Result<String> {
+    let profiles = Config::profiles().await.latest_arc();
+    if profiles.get_item(id_or_name).is_ok() {
+        return Ok(id_or_name.into());
+    }
+
+    profiles
+        .items
+        .as_ref()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.name.as_deref() == Some(id_or_name))
+                .and_then(|item| item.uid.clone())
+        })
+        .ok_or_else(|| anyhow::anyhow!("profile not found: {id_or_name}"))
+}
+
+async fn cli_status() -> Value {
+    let verge = Config::verge().await.latest_arc();
+    let clash = Config::clash().await.latest_arc();
+    let clash_info = clash.get_client_info();
+    let profiles = Config::profiles().await.latest_arc();
+    let current_uid = profiles.current.clone();
+    let current_name = current_uid
+        .as_ref()
+        .and_then(|uid| profiles.get_name_by_uid(uid))
+        .cloned();
+
+    json!({
+        "app": {
+            "running": true,
+        },
+        "core": {
+            "running_mode": CoreManager::global().get_running_mode().to_string(),
+            "info": {
+                "mixed_port": clash_info.mixed_port,
+                "socks_port": clash_info.socks_port,
+                "port": clash_info.port,
+                "server": clash_info.server,
+            },
+        },
+        "verge": {
+            "system_proxy": verge.enable_system_proxy.unwrap_or(false),
+            "tun": verge.enable_tun_mode.unwrap_or(false),
+            "external_controller_enabled": verge.enable_external_controller.unwrap_or(false),
+        },
+        "profile": {
+            "uid": current_uid,
+            "name": current_name,
+        },
+    })
+}
+
+async fn dispatch_cli_request(request: &CliRequest) -> Result<Value> {
+    match request.method.as_str() {
+        "status" => Ok(cli_status().await),
+        "core.restart" => {
+            cmd::restart_core().await.map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true }))
+        }
+        "core.mode" => {
+            let mode = request
+                .params
+                .get("mode")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing string parameter: mode"))?;
+            if !matches!(mode, "rule" | "global" | "direct") {
+                bail!("invalid core mode: {mode}");
+            }
+            cmd::patch_clash_mode(mode.into())
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true, "mode": mode }))
+        }
+        "verge.patch" => {
+            let patch = serde_json::from_value::<IVerge>(request.params.clone())?;
+            cmd::patch_verge_config(patch)
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true }))
+        }
+        "profile.switch" => {
+            let id_or_name = request
+                .params
+                .get("profile")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing string parameter: profile"))?;
+            let profile_id = resolve_profile_id(id_or_name).await?;
+            let outcome = cmd::patch_profiles_config(IProfiles {
+                current: Some(profile_id.clone()),
+                items: None,
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+            if !outcome.is_valid() {
+                bail!("profile switch validation failed: {outcome}");
+            }
+            Ok(json!({
+                "changed": true,
+                "profile": profile_id,
+                "validation": outcome,
+            }))
+        }
+        method => bail!("unknown CLI method: {method}"),
+    }
+}
+
+async fn handle_cli_request(
+    authorization: Option<String>,
+    request: CliRequest,
+    token: Option<String>,
+) -> std::result::Result<impl warp::Reply, warp::Rejection> {
+    let response = if token.is_none() {
+        CliResponse::failure(request.id, "unavailable", "CLI bridge initialization failed")
+    } else if !authorized(authorization.as_deref(), token.as_deref().unwrap_or_default()) {
+        CliResponse::failure(request.id, "authentication_failed", "invalid CLI token")
+    } else {
+        match dispatch_cli_request(&request).await {
+            Ok(data) => CliResponse::success(request.id, data),
+            Err(error) => CliResponse::failure(request.id, "command_failed", error.to_string()),
+        }
+    };
+
+    Ok(warp::reply::json(&response))
+}
 
 /// check whether there is already exists
 pub async fn check_singleton() -> Result<()> {
@@ -64,6 +234,12 @@ pub fn embed_server() {
         .set(Mutex::new(Some(shutdown_tx)))
         .expect("failed to set shutdown signal for embedded server");
     let port = IVerge::get_singleton_port();
+    let cli_token = ensure_cli_token()
+        .map_err(|error| {
+            logging!(error, Type::Setup, "Failed to initialize CLI token: {error}");
+            error
+        })
+        .ok();
 
     let visible = warp::path!("commands" / "visible").and_then(|| async {
         logging!(info, Type::Window, "检测到从单例模式恢复应用窗口");
@@ -112,7 +288,14 @@ pub fn embed_server() {
             ))
         });
 
-    let commands = visible.or(scheme).or(pac);
+    let cli = warp::path!("cli" / "v1" / "invoke")
+        .and(warp::post())
+        .and(warp::header::optional::<String>("authorization"))
+        .and(warp::body::json::<CliRequest>())
+        .and(warp::any().map(move || cli_token.clone()))
+        .and_then(handle_cli_request);
+
+    let commands = visible.or(scheme).or(pac).or(cli);
 
     AsyncHandler::spawn(move || async move {
         warp::serve(commands)
@@ -132,5 +315,25 @@ pub fn shutdown_embedded_server() {
         && let Some(sender) = sender.lock().take()
     {
         sender.send(()).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_cli_token_has_256_bits() {
+        let token = generate_cli_token().expect("generate token");
+        assert_eq!(token.len(), 64);
+        assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn authorization_requires_exact_bearer_token() {
+        assert!(authorized(Some("Bearer abc"), "abc"));
+        assert!(!authorized(Some("Bearer abcd"), "abc"));
+        assert!(!authorized(Some("abc"), "abc"));
+        assert!(!authorized(None, "abc"));
     }
 }

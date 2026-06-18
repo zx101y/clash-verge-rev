@@ -1103,6 +1103,7 @@ dependencies = [
  "boa_engine",
  "bytes",
  "chrono",
+ "clash-verge-cli-protocol",
  "clash-verge-draft",
  "clash-verge-i18n",
  "clash-verge-limiter",
@@ -1174,8 +1175,17 @@ dependencies = [
 name = "clash-verge-cli"
 version = "0.1.0"
 dependencies = [
+ "clash-verge-cli-protocol",
  "serde_json",
  "serde_yaml_ng",
+]
+
+[[package]]
+name = "clash-verge-cli-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

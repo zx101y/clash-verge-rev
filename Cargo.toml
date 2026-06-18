@@ -2,6 +2,7 @@
 members = [
   "src-tauri",
   "crates/clash-verge-cli",
+  "crates/clash-verge-cli-protocol",
   "crates/clash-verge-draft",
   "crates/clash-verge-logging",
   "crates/clash-verge-signal",
@@ -52,6 +53,7 @@ clash-verge-logging = { path = "crates/clash-verge-logging" }
 clash-verge-signal = { path = "crates/clash-verge-signal" }
 clash-verge-i18n = { path = "crates/clash-verge-i18n" }
 clash-verge-limiter = { path = "crates/clash-verge-limiter" }
+clash-verge-cli-protocol = { path = "crates/clash-verge-cli-protocol" }
 tauri-plugin-clash-verge-sysinfo = { path = "crates/tauri-plugin-clash-verge-sysinfo" }
 
 tauri = { version = "2.11.2" }
