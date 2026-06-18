@@ -1,5 +1,6 @@
 use super::CmdResult;
 use crate::feat;
+use crate::service;
 use crate::utils::dirs;
 use crate::{
     cmd::StringifyErr as _,
@@ -26,19 +27,19 @@ pub async fn copy_clash_env() -> CmdResult {
 /// 获取Clash信息
 #[tauri::command]
 pub async fn get_clash_info() -> CmdResult<ClashInfo> {
-    Ok(Config::clash().await.data_arc().get_client_info())
+    Ok(service::clash::get_info().await)
 }
 
 /// 修改Clash配置
 #[tauri::command]
 pub async fn patch_clash_config(payload: Mapping) -> CmdResult {
-    feat::patch_clash(&payload).await.stringify_err()
+    service::clash::patch_config(&payload).await.stringify_err()
 }
 
 /// 修改Clash模式
 #[tauri::command]
 pub async fn patch_clash_mode(payload: String) -> CmdResult {
-    feat::change_clash_mode(payload).await;
+    service::clash::patch_mode(payload).await;
     Ok(())
 }
 
@@ -79,33 +80,19 @@ pub async fn change_clash_core(clash_core: String) -> CmdResult<Option<String>> 
 /// 启动核心
 #[tauri::command]
 pub async fn start_core() -> CmdResult {
-    let result = CoreManager::global().start_core().await.stringify_err();
-    if result.is_ok() {
-        handle::Handle::refresh_clash();
-    }
-    result
+    service::clash::start().await.stringify_err()
 }
 
 /// 关闭核心
 #[tauri::command]
 pub async fn stop_core() -> CmdResult {
-    logging_error!(Type::Core, Config::profiles().await.data_arc().save_file().await);
-    let result = CoreManager::global().stop_core().await.stringify_err();
-    if result.is_ok() {
-        handle::Handle::refresh_clash();
-    }
-    result
+    service::clash::stop().await.stringify_err()
 }
 
 /// 重启核心
 #[tauri::command]
 pub async fn restart_core() -> CmdResult {
-    logging_error!(Type::Core, Config::profiles().await.data_arc().save_file().await);
-    let result = CoreManager::global().restart_core().await.stringify_err();
-    if result.is_ok() {
-        handle::Handle::refresh_clash();
-    }
-    result
+    service::clash::restart().await.stringify_err()
 }
 
 /// 测试URL延迟

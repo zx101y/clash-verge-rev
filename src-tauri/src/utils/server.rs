@@ -5,6 +5,7 @@ use crate::{
     core::CoreManager,
     module::lightweight,
     process::AsyncHandler,
+    service,
     utils::{dirs, window_manager::WindowManager},
 };
 use anyhow::{Result, bail};
@@ -67,36 +68,17 @@ fn authorized(authorization: Option<&str>, token: &str) -> bool {
         .is_some_and(|value| value == token)
 }
 
-async fn resolve_profile_id(id_or_name: &str) -> Result<String> {
-    let profiles = Config::profiles().await.latest_arc();
-    if profiles.get_item(id_or_name).is_ok() {
-        return Ok(id_or_name.into());
-    }
-
-    profiles
-        .items
-        .as_ref()
-        .and_then(|items| {
-            items
-                .iter()
-                .find(|item| item.name.as_deref() == Some(id_or_name))
-                .and_then(|item| item.uid.clone())
-        })
-        .ok_or_else(|| anyhow::anyhow!("profile not found: {id_or_name}"))
-}
-
-async fn cli_status() -> Value {
-    let verge = Config::verge().await.latest_arc();
-    let clash = Config::clash().await.latest_arc();
-    let clash_info = clash.get_client_info();
-    let profiles = Config::profiles().await.latest_arc();
+async fn cli_status() -> Result<Value> {
+    let verge = service::verge::get_config().await?;
+    let clash_info = service::clash::get_info().await;
+    let profiles = service::profile::get_config().await;
     let current_uid = profiles.current.clone();
     let current_name = current_uid
         .as_ref()
         .and_then(|uid| profiles.get_name_by_uid(uid))
         .cloned();
 
-    json!({
+    Ok(json!({
         "app": {
             "running": true,
         },
@@ -118,14 +100,14 @@ async fn cli_status() -> Value {
             "uid": current_uid,
             "name": current_name,
         },
-    })
+    }))
 }
 
 async fn dispatch_cli_request(request: &CliRequest) -> Result<Value> {
     match request.method.as_str() {
-        "status" => Ok(cli_status().await),
+        "status" => cli_status().await,
         "core.restart" => {
-            cmd::restart_core().await.map_err(|error| anyhow::anyhow!(error))?;
+            service::clash::restart().await?;
             Ok(json!({ "changed": true }))
         }
         "core.mode" => {
@@ -137,16 +119,12 @@ async fn dispatch_cli_request(request: &CliRequest) -> Result<Value> {
             if !matches!(mode, "rule" | "global" | "direct") {
                 bail!("invalid core mode: {mode}");
             }
-            cmd::patch_clash_mode(mode.into())
-                .await
-                .map_err(|error| anyhow::anyhow!(error))?;
+            service::clash::patch_mode(mode.into()).await;
             Ok(json!({ "changed": true, "mode": mode }))
         }
         "verge.patch" => {
             let patch = serde_json::from_value::<IVerge>(request.params.clone())?;
-            cmd::patch_verge_config(patch)
-                .await
-                .map_err(|error| anyhow::anyhow!(error))?;
+            service::verge::patch_config(&patch).await?;
             Ok(json!({ "changed": true }))
         }
         "profile.switch" => {
@@ -155,7 +133,7 @@ async fn dispatch_cli_request(request: &CliRequest) -> Result<Value> {
                 .get("profile")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("missing string parameter: profile"))?;
-            let profile_id = resolve_profile_id(id_or_name).await?;
+            let profile_id = service::profile::resolve_id(id_or_name).await?;
             let outcome = cmd::patch_profiles_config(IProfiles {
                 current: Some(profile_id.clone()),
                 items: None,

@@ -9,6 +9,7 @@ mod enhance;
 mod feat;
 mod module;
 mod process;
+mod service;
 pub mod utils;
 
 use crate::constants::files;

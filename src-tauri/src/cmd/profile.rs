@@ -12,7 +12,7 @@ use crate::{
         profiles_append_item_safe,
     },
     core::{CoreManager, handle, timer::Timer, tray::Tray, validate::ValidationOutcome},
-    feat,
+    feat, service,
     utils::{dirs, help},
 };
 use clash_verge_draft::SharedDraft;
@@ -35,9 +35,7 @@ fn profile_import_error(err: &anyhow::Error) -> std::string::String {
 #[tauri::command]
 pub async fn get_profiles() -> CmdResult<SharedDraft<IProfiles>> {
     logging!(debug, Type::Cmd, "获取配置文件列表");
-    let draft = Config::profiles().await;
-    let data = draft.data_arc();
-    Ok(data)
+    Ok(service::profile::get_config().await)
 }
 
 /// 增强配置文件
@@ -145,7 +143,7 @@ pub async fn create_profile(item: PrfItem, file_data: Option<String>) -> CmdResu
 /// 更新配置文件
 #[tauri::command]
 pub async fn update_profile(index: String, option: Option<PrfOption>) -> CmdResult {
-    match feat::update_profile(&index, option.as_ref(), true, true, true).await {
+    match service::profile::update(&index, option.as_ref()).await {
         Ok(_) => Ok(()),
         Err(e) => {
             logging!(error, Type::Cmd, "{}", e);
