@@ -103,11 +103,20 @@ async fn cli_status() -> Result<Value> {
     }))
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn dispatch_cli_request(request: &CliRequest) -> Result<Value> {
     match request.method.as_str() {
         "status" => cli_status().await,
         "core.restart" => {
             service::clash::restart().await?;
+            Ok(json!({ "changed": true }))
+        }
+        "core.start" => {
+            service::clash::start().await?;
+            Ok(json!({ "changed": true }))
+        }
+        "core.stop" => {
+            service::clash::stop().await?;
             Ok(json!({ "changed": true }))
         }
         "core.mode" => {
@@ -128,11 +137,7 @@ async fn dispatch_cli_request(request: &CliRequest) -> Result<Value> {
             Ok(json!({ "changed": true }))
         }
         "profile.switch" => {
-            let id_or_name = request
-                .params
-                .get("profile")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("missing string parameter: profile"))?;
+            let id_or_name = required_string(&request.params, "profile")?;
             let profile_id = service::profile::resolve_id(id_or_name).await?;
             let outcome = cmd::patch_profiles_config(IProfiles {
                 current: Some(profile_id.clone()),
@@ -149,8 +154,164 @@ async fn dispatch_cli_request(request: &CliRequest) -> Result<Value> {
                 "validation": outcome,
             }))
         }
+        "profile.update" => {
+            let profile_id = service::profile::resolve_id(required_string(&request.params, "profile")?).await?;
+            service::profile::update(&profile_id, None).await?;
+            Ok(json!({ "changed": true, "profile": profile_id }))
+        }
+        "profile.delete" => {
+            let profile_id = service::profile::resolve_id(required_string(&request.params, "profile")?).await?;
+            cmd::delete_profile(profile_id.clone())
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true, "profile": profile_id }))
+        }
+        "profile.read" => {
+            let profile_id = service::profile::resolve_id(required_string(&request.params, "profile")?).await?;
+            let content = cmd::read_profile_file(profile_id)
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "content": content }))
+        }
+        "backup.create" => {
+            service::backup::create().await?;
+            Ok(json!({ "changed": true }))
+        }
+        "backup.list" => Ok(serde_json::to_value(service::backup::list().await?)?),
+        "backup.delete" => {
+            service::backup::delete(required_string(&request.params, "filename")?.into()).await?;
+            Ok(json!({ "changed": true }))
+        }
+        "backup.restore" => {
+            service::backup::restore(required_string(&request.params, "filename")?.into()).await?;
+            Ok(json!({ "changed": true }))
+        }
+        "backup.import" => {
+            let filename = service::backup::import(required_string(&request.params, "source")?.into()).await?;
+            Ok(json!({ "changed": true, "filename": filename }))
+        }
+        "backup.export" => {
+            service::backup::export(
+                required_string(&request.params, "filename")?.into(),
+                required_string(&request.params, "destination")?.into(),
+            )
+            .await?;
+            Ok(json!({ "changed": true }))
+        }
+        "service.status" => {
+            let available = cmd::is_service_available().await.is_ok();
+            Ok(json!({ "available": available }))
+        }
+        "service.operate" => {
+            let operation = required_string(&request.params, "operation")?;
+            let result = match operation {
+                "install" => cmd::install_service().await,
+                "uninstall" => cmd::uninstall_service().await,
+                "reinstall" => cmd::reinstall_service().await,
+                "repair" => cmd::repair_service().await,
+                _ => bail!("invalid service operation: {operation}"),
+            };
+            result.map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true, "operation": operation }))
+        }
+        "network.hostname" => Ok(json!(cmd::get_system_hostname())),
+        "network.interfaces" => Ok(json!(cmd::get_network_interfaces())),
+        "lightweight.status" => Ok(json!({
+            "running_mode": CoreManager::global().get_running_mode().to_string(),
+        })),
+        "lightweight.set" => {
+            let enabled = request
+                .params
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| anyhow::anyhow!("missing boolean parameter: enabled"))?;
+            if enabled {
+                cmd::entry_lightweight_mode().await
+            } else {
+                cmd::exit_lightweight_mode().await
+            }
+            .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true, "enabled": enabled }))
+        }
+        "proxy.groups" => service::proxy::groups().await,
+        "proxy.select" => {
+            service::proxy::select(
+                required_string(&request.params, "group")?,
+                required_string(&request.params, "node")?,
+            )
+            .await?;
+            Ok(json!({ "changed": true }))
+        }
+        "connection.list" => service::proxy::connections().await,
+        "connection.close" => {
+            service::proxy::close_connection(request.params.get("id").and_then(Value::as_str)).await?;
+            Ok(json!({ "changed": true }))
+        }
+        "dns.show" => {
+            let content = cmd::get_dns_config_content()
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "content": content }))
+        }
+        "dns.apply" => {
+            let enabled = request
+                .params
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| anyhow::anyhow!("missing boolean parameter: enabled"))?;
+            cmd::apply_dns_config(enabled)
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true, "enabled": enabled }))
+        }
+        "dns.validate" => {
+            let outcome = cmd::validate_dns_config()
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(serde_json::to_value(outcome)?)
+        }
+        "webdav.configure" => {
+            cmd::save_webdav_config(
+                required_string(&request.params, "url")?.into(),
+                required_string(&request.params, "username")?.into(),
+                required_string(&request.params, "password")?.into(),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true }))
+        }
+        "webdav.backup" => {
+            cmd::create_webdav_backup()
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true }))
+        }
+        "webdav.list" => Ok(serde_json::to_value(
+            cmd::list_webdav_backup()
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?,
+        )?),
+        "webdav.delete" => {
+            cmd::delete_webdav_backup(required_string(&request.params, "filename")?.into())
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true }))
+        }
+        "webdav.restore" => {
+            cmd::restore_webdav_backup(required_string(&request.params, "filename")?.into())
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(json!({ "changed": true }))
+        }
         method => bail!("unknown CLI method: {method}"),
     }
+}
+
+fn required_string<'a>(params: &'a Value, name: &str) -> Result<&'a str> {
+    params
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("missing string parameter: {name}"))
 }
 
 async fn handle_cli_request(

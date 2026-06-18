@@ -29,16 +29,37 @@ Commands:
   status                         Show app/config status
   app dir                        Print the app config directory
   core info                      Show core ports and controller config
-  core restart                   Restart the running Mihomo core
+  core start|stop|restart        Control the running Mihomo core
   core mode <rule|global|direct> Change the running core mode
   setting get [key]              Show all Verge settings or one dotted key
   setting set <key> <value>      Patch a Verge setting through the GUI
   profile list                   List profiles
   profile switch <id-or-name>    Switch the active profile through the GUI
+  profile update <id-or-name>    Update a remote profile
+  profile delete <id-or-name>    Delete a profile (requires --yes)
+  profile read <id-or-name>      Read profile file content
+  backup create|list             Manage local backups
+  backup delete <file>           Delete a backup (requires --yes)
+  backup restore <file>          Restore a backup (requires --yes)
+  backup import <path>           Import a local backup
+  backup export <file> <path>    Export a local backup
+  service status                 Show service availability
+  service <operation>            Install/uninstall/reinstall/repair (--yes)
+  network hostname|interfaces    Show host network information
+  lightweight status|on|off      Control lightweight mode
+  proxy groups                   List proxy groups and nodes
+  proxy select <group> <node>    Select a node for a proxy group
+  connection list                List active connections
+  connection close <id>|--all    Close connections (requires --yes)
+  dns show|validate|apply|disable Manage the saved DNS configuration
+  webdav config <url> <user> <password-env>
+  webdav backup|list             Manage WebDAV backups
+  webdav delete|restore <file>   Destructive WebDAV operation (--yes)
   help                           Show this help
 
 Options:
   --json                         Print machine-readable JSON
+  --yes                          Confirm destructive or privileged operations
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +71,7 @@ enum OutputFormat {
 #[derive(Debug)]
 struct Cli {
     format: OutputFormat,
+    yes: bool,
     command: Command,
 }
 
@@ -58,12 +80,84 @@ enum Command {
     Status,
     AppDir,
     CoreInfo,
+    CoreStart,
+    CoreStop,
     CoreRestart,
-    CoreMode { mode: String },
-    SettingGet { key: Option<String> },
-    SettingSet { key: String, value: String },
+    CoreMode {
+        mode: String,
+    },
+    SettingGet {
+        key: Option<String>,
+    },
+    SettingSet {
+        key: String,
+        value: String,
+    },
     ProfileList,
-    ProfileSwitch { profile: String },
+    ProfileSwitch {
+        profile: String,
+    },
+    ProfileUpdate {
+        profile: String,
+    },
+    ProfileDelete {
+        profile: String,
+    },
+    ProfileRead {
+        profile: String,
+    },
+    BackupCreate,
+    BackupList,
+    BackupDelete {
+        filename: String,
+    },
+    BackupRestore {
+        filename: String,
+    },
+    BackupImport {
+        source: String,
+    },
+    BackupExport {
+        filename: String,
+        destination: String,
+    },
+    ServiceStatus,
+    ServiceOperation {
+        operation: String,
+    },
+    NetworkHostname,
+    NetworkInterfaces,
+    LightweightStatus,
+    LightweightSet {
+        enabled: bool,
+    },
+    ProxyGroups,
+    ProxySelect {
+        group: String,
+        node: String,
+    },
+    ConnectionList,
+    ConnectionClose {
+        id: Option<String>,
+    },
+    DnsShow,
+    DnsValidate,
+    DnsApply {
+        enabled: bool,
+    },
+    WebDavConfigure {
+        url: String,
+        username: String,
+        password_env: String,
+    },
+    WebDavBackup,
+    WebDavList,
+    WebDavDelete {
+        filename: String,
+    },
+    WebDavRestore {
+        filename: String,
+    },
     Help,
 }
 
@@ -156,6 +250,14 @@ fn run_inner(args: Vec<String>) -> CliResult<()> {
             let payload = core_info_payload(&snapshot);
             emit(cli.format, payload, || core_info_human(&snapshot))
         }
+        Command::CoreStart => {
+            let payload = bridge_call("core.start", json!({}))?;
+            emit(cli.format, payload, || "Core started".to_string())
+        }
+        Command::CoreStop => {
+            let payload = bridge_call("core.stop", json!({}))?;
+            emit(cli.format, payload, || "Core stopped".to_string())
+        }
         Command::CoreRestart => {
             let payload = bridge_call("core.restart", json!({}))?;
             emit(cli.format, payload, || "Core restarted".to_string())
@@ -195,16 +297,162 @@ fn run_inner(args: Vec<String>) -> CliResult<()> {
             let payload = bridge_call("profile.switch", json!({ "profile": profile }))?;
             emit(cli.format, payload, || format!("Profile switched: {profile}"))
         }
+        Command::ProfileUpdate { profile } => {
+            let payload = bridge_call("profile.update", json!({ "profile": profile }))?;
+            emit(cli.format, payload, || format!("Profile updated: {profile}"))
+        }
+        Command::ProfileDelete { profile } => {
+            require_yes(cli.yes, "profile delete")?;
+            let payload = bridge_call("profile.delete", json!({ "profile": profile }))?;
+            emit(cli.format, payload, || format!("Profile deleted: {profile}"))
+        }
+        Command::ProfileRead { profile } => {
+            let payload = bridge_call("profile.read", json!({ "profile": profile }))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::BackupCreate => {
+            let payload = bridge_call("backup.create", json!({}))?;
+            emit(cli.format, payload, || "Backup created".to_string())
+        }
+        Command::BackupList => {
+            let payload = bridge_call("backup.list", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::BackupDelete { filename } => {
+            require_yes(cli.yes, "backup delete")?;
+            let payload = bridge_call("backup.delete", json!({ "filename": filename }))?;
+            emit(cli.format, payload, || format!("Backup deleted: {filename}"))
+        }
+        Command::BackupRestore { filename } => {
+            require_yes(cli.yes, "backup restore")?;
+            let payload = bridge_call("backup.restore", json!({ "filename": filename }))?;
+            emit(cli.format, payload, || format!("Backup restored: {filename}"))
+        }
+        Command::BackupImport { source } => {
+            let payload = bridge_call("backup.import", json!({ "source": source }))?;
+            emit(cli.format, payload, || "Backup imported".to_string())
+        }
+        Command::BackupExport { filename, destination } => {
+            let payload = bridge_call(
+                "backup.export",
+                json!({ "filename": filename, "destination": destination }),
+            )?;
+            emit(cli.format, payload, || format!("Backup exported: {filename}"))
+        }
+        Command::ServiceStatus => {
+            let payload = bridge_call("service.status", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::ServiceOperation { operation } => {
+            require_yes(cli.yes, &format!("service {operation}"))?;
+            let payload = bridge_call("service.operate", json!({ "operation": operation }))?;
+            emit(cli.format, payload, || {
+                format!("Service operation completed: {operation}")
+            })
+        }
+        Command::NetworkHostname => {
+            let payload = bridge_call("network.hostname", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::NetworkInterfaces => {
+            let payload = bridge_call("network.interfaces", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::LightweightStatus => {
+            let payload = bridge_call("lightweight.status", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::LightweightSet { enabled } => {
+            let payload = bridge_call("lightweight.set", json!({ "enabled": enabled }))?;
+            emit(cli.format, payload, || {
+                format!("Lightweight mode {}", if enabled { "enabled" } else { "disabled" })
+            })
+        }
+        Command::ProxyGroups => {
+            let payload = bridge_call("proxy.groups", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::ProxySelect { group, node } => {
+            let payload = bridge_call("proxy.select", json!({ "group": group, "node": node }))?;
+            emit(cli.format, payload, || format!("Proxy selected: {group} -> {node}"))
+        }
+        Command::ConnectionList => {
+            let payload = bridge_call("connection.list", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::ConnectionClose { id } => {
+            require_yes(cli.yes, "connection close")?;
+            let payload = bridge_call("connection.close", json!({ "id": id }))?;
+            emit(cli.format, payload, || "Connection closed".to_string())
+        }
+        Command::DnsShow => {
+            let payload = bridge_call("dns.show", json!({}))?;
+            emit(cli.format, payload.clone(), || {
+                payload
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+        }
+        Command::DnsValidate => {
+            let payload = bridge_call("dns.validate", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::DnsApply { enabled } => {
+            let payload = bridge_call("dns.apply", json!({ "enabled": enabled }))?;
+            emit(cli.format, payload, || {
+                format!("DNS configuration {}", if enabled { "applied" } else { "disabled" })
+            })
+        }
+        Command::WebDavConfigure {
+            url,
+            username,
+            password_env,
+        } => {
+            let password = env::var(&password_env).map_err(|_| {
+                CliError::new(
+                    ExitCode::InvalidArgument,
+                    format!("password environment variable is not set: {password_env}"),
+                )
+            })?;
+            let payload = bridge_call(
+                "webdav.configure",
+                json!({ "url": url, "username": username, "password": password }),
+            )?;
+            emit(cli.format, payload, || "WebDAV configuration saved".to_string())
+        }
+        Command::WebDavBackup => {
+            let payload = bridge_call("webdav.backup", json!({}))?;
+            emit(cli.format, payload, || "WebDAV backup created".to_string())
+        }
+        Command::WebDavList => {
+            let payload = bridge_call("webdav.list", json!({}))?;
+            emit(cli.format, payload.clone(), || human_value(&payload))
+        }
+        Command::WebDavDelete { filename } => {
+            require_yes(cli.yes, "webdav delete")?;
+            let payload = bridge_call("webdav.delete", json!({ "filename": filename }))?;
+            emit(cli.format, payload, || format!("WebDAV backup deleted: {filename}"))
+        }
+        Command::WebDavRestore { filename } => {
+            require_yes(cli.yes, "webdav restore")?;
+            let payload = bridge_call("webdav.restore", json!({ "filename": filename }))?;
+            emit(cli.format, payload, || format!("WebDAV backup restored: {filename}"))
+        }
     }
 }
 
+#[allow(clippy::cognitive_complexity)]
 fn parse_args(args: Vec<String>) -> CliResult<Cli> {
     let mut format = OutputFormat::Human;
+    let mut yes = false;
     let mut rest = Vec::new();
 
     for arg in args {
         match arg.as_str() {
             "--json" => format = OutputFormat::Json,
+            "--yes" | "-y" => yes = true,
             "-h" | "--help" => rest.push("help".to_string()),
             _ => rest.push(arg),
         }
@@ -216,6 +464,8 @@ fn parse_args(args: Vec<String>) -> CliResult<Cli> {
         [cmd] if cmd == "status" => Command::Status,
         [cmd, sub] if cmd == "app" && sub == "dir" => Command::AppDir,
         [cmd, sub] if cmd == "core" && sub == "info" => Command::CoreInfo,
+        [cmd, sub] if cmd == "core" && sub == "start" => Command::CoreStart,
+        [cmd, sub] if cmd == "core" && sub == "stop" => Command::CoreStop,
         [cmd, sub] if cmd == "core" && sub == "restart" => Command::CoreRestart,
         [cmd, sub, mode] if cmd == "core" && sub == "mode" && matches!(mode.as_str(), "rule" | "global" | "direct") => {
             Command::CoreMode { mode: mode.clone() }
@@ -230,6 +480,68 @@ fn parse_args(args: Vec<String>) -> CliResult<Cli> {
         [cmd, sub, profile] if cmd == "profile" && sub == "switch" => Command::ProfileSwitch {
             profile: profile.clone(),
         },
+        [cmd, sub, profile] if cmd == "profile" && sub == "update" => Command::ProfileUpdate {
+            profile: profile.clone(),
+        },
+        [cmd, sub, profile] if cmd == "profile" && sub == "delete" => Command::ProfileDelete {
+            profile: profile.clone(),
+        },
+        [cmd, sub, profile] if cmd == "profile" && sub == "read" => Command::ProfileRead {
+            profile: profile.clone(),
+        },
+        [cmd, sub] if cmd == "backup" && sub == "create" => Command::BackupCreate,
+        [cmd, sub] if cmd == "backup" && sub == "list" => Command::BackupList,
+        [cmd, sub, filename] if cmd == "backup" && sub == "delete" => Command::BackupDelete {
+            filename: filename.clone(),
+        },
+        [cmd, sub, filename] if cmd == "backup" && sub == "restore" => Command::BackupRestore {
+            filename: filename.clone(),
+        },
+        [cmd, sub, source] if cmd == "backup" && sub == "import" => Command::BackupImport { source: source.clone() },
+        [cmd, sub, filename, destination] if cmd == "backup" && sub == "export" => Command::BackupExport {
+            filename: filename.clone(),
+            destination: destination.clone(),
+        },
+        [cmd, sub] if cmd == "service" && sub == "status" => Command::ServiceStatus,
+        [cmd, operation]
+            if cmd == "service" && matches!(operation.as_str(), "install" | "uninstall" | "reinstall" | "repair") =>
+        {
+            Command::ServiceOperation {
+                operation: operation.clone(),
+            }
+        }
+        [cmd, sub] if cmd == "network" && sub == "hostname" => Command::NetworkHostname,
+        [cmd, sub] if cmd == "network" && sub == "interfaces" => Command::NetworkInterfaces,
+        [cmd, sub] if cmd == "lightweight" && sub == "status" => Command::LightweightStatus,
+        [cmd, sub] if cmd == "lightweight" && sub == "on" => Command::LightweightSet { enabled: true },
+        [cmd, sub] if cmd == "lightweight" && sub == "off" => Command::LightweightSet { enabled: false },
+        [cmd, sub] if cmd == "proxy" && sub == "groups" => Command::ProxyGroups,
+        [cmd, sub, group, node] if cmd == "proxy" && sub == "select" => Command::ProxySelect {
+            group: group.clone(),
+            node: node.clone(),
+        },
+        [cmd, sub] if cmd == "connection" && sub == "list" => Command::ConnectionList,
+        [cmd, sub, all] if cmd == "connection" && sub == "close" && all == "--all" => {
+            Command::ConnectionClose { id: None }
+        }
+        [cmd, sub, id] if cmd == "connection" && sub == "close" => Command::ConnectionClose { id: Some(id.clone()) },
+        [cmd, sub] if cmd == "dns" && sub == "show" => Command::DnsShow,
+        [cmd, sub] if cmd == "dns" && sub == "validate" => Command::DnsValidate,
+        [cmd, sub] if cmd == "dns" && sub == "apply" => Command::DnsApply { enabled: true },
+        [cmd, sub] if cmd == "dns" && sub == "disable" => Command::DnsApply { enabled: false },
+        [cmd, sub, url, username, password_env] if cmd == "webdav" && sub == "config" => Command::WebDavConfigure {
+            url: url.clone(),
+            username: username.clone(),
+            password_env: password_env.clone(),
+        },
+        [cmd, sub] if cmd == "webdav" && sub == "backup" => Command::WebDavBackup,
+        [cmd, sub] if cmd == "webdav" && sub == "list" => Command::WebDavList,
+        [cmd, sub, filename] if cmd == "webdav" && sub == "delete" => Command::WebDavDelete {
+            filename: filename.clone(),
+        },
+        [cmd, sub, filename] if cmd == "webdav" && sub == "restore" => Command::WebDavRestore {
+            filename: filename.clone(),
+        },
         [cmd, ..] => {
             return Err(CliError::new(
                 ExitCode::InvalidArgument,
@@ -238,7 +550,18 @@ fn parse_args(args: Vec<String>) -> CliResult<Cli> {
         }
     };
 
-    Ok(Cli { format, command })
+    Ok(Cli { format, yes, command })
+}
+
+fn require_yes(confirmed: bool, operation: &str) -> CliResult<()> {
+    if confirmed {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            ExitCode::InvalidArgument,
+            format!("{operation} requires --yes"),
+        ))
+    }
 }
 
 fn resolve_app_paths() -> CliResult<AppPaths> {
@@ -744,6 +1067,88 @@ mod tests {
             setting.command,
             Command::SettingSet { ref key, ref value }
                 if key == "enable_system_proxy" && value == "true"
+        ));
+    }
+
+    #[test]
+    fn parses_extended_commands_and_confirmation() {
+        let delete = parse_args(vec![
+            "profile".into(),
+            "delete".into(),
+            "Example".into(),
+            "--yes".into(),
+        ])
+        .expect("parse profile delete");
+        assert!(delete.yes);
+        assert!(matches!(
+            delete.command,
+            Command::ProfileDelete { ref profile } if profile == "Example"
+        ));
+
+        let export = parse_args(vec![
+            "backup".into(),
+            "export".into(),
+            "backup.zip".into(),
+            "D:\\backup.zip".into(),
+        ])
+        .expect("parse backup export");
+        assert!(matches!(
+            export.command,
+            Command::BackupExport {
+                ref filename,
+                ref destination,
+            } if filename == "backup.zip" && destination == "D:\\backup.zip"
+        ));
+
+        let service =
+            parse_args(vec!["service".into(), "repair".into(), "-y".into()]).expect("parse service operation");
+        assert!(service.yes);
+        assert!(matches!(
+            service.command,
+            Command::ServiceOperation { ref operation } if operation == "repair"
+        ));
+    }
+
+    #[test]
+    fn destructive_operations_require_confirmation() {
+        assert!(require_yes(false, "profile delete").is_err());
+        assert!(require_yes(true, "profile delete").is_ok());
+    }
+
+    #[test]
+    fn parses_runtime_and_webdav_commands() {
+        let select = parse_args(vec!["proxy".into(), "select".into(), "GLOBAL".into(), "Node A".into()])
+            .expect("parse proxy select");
+        assert!(matches!(
+            select.command,
+            Command::ProxySelect { ref group, ref node }
+                if group == "GLOBAL" && node == "Node A"
+        ));
+
+        let close_all = parse_args(vec![
+            "connection".into(),
+            "close".into(),
+            "--all".into(),
+            "--yes".into(),
+        ])
+        .expect("parse close all");
+        assert!(close_all.yes);
+        assert!(matches!(close_all.command, Command::ConnectionClose { id: None }));
+
+        let webdav = parse_args(vec![
+            "webdav".into(),
+            "config".into(),
+            "https://dav.example".into(),
+            "user".into(),
+            "CVR_DAV_PASSWORD".into(),
+        ])
+        .expect("parse webdav config");
+        assert!(matches!(
+            webdav.command,
+            Command::WebDavConfigure {
+                ref password_env,
+                ..
+            } if password_env == "CVR_DAV_PASSWORD"
         ));
     }
 
