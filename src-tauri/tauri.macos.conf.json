@@ -3,6 +3,11 @@
   "identifier": "io.github.clash-verge-rev.clash-verge-rev",
   "productName": "Clash Verge",
   "bundle": {
+    "externalBin": [
+      "sidecar/verge-mihomo",
+      "sidecar/verge-mihomo-alpha",
+      "sidecar/clash-verge-cli"
+    ],
     "targets": ["app", "dmg"],
     "macOS": {
       "frameworks": [],

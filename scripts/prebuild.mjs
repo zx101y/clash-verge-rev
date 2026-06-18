@@ -72,6 +72,33 @@ const SIDECAR_DIR = path.join(cwd, 'src-tauri', 'sidecar')
 // Linux service binaries are bundled as externalBin sidecars (see tauri.linux.conf.json)
 const SERVICE_DIR = platform === 'linux' ? SIDECAR_DIR : RESOURCES_DIR
 
+async function buildCliSidecar() {
+  const targetArgs = target ? ` --target ${target}` : ''
+  execSync(`cargo build --locked --release -p clash-verge-cli${targetArgs}`, {
+    cwd,
+    stdio: 'inherit',
+  })
+
+  const executable =
+    platform === 'win32' ? 'clash-verge-cli.exe' : 'clash-verge-cli'
+  const sourcePath = path.join(
+    cwd,
+    'target',
+    ...(target ? [target] : []),
+    'release',
+    executable,
+  )
+  const targetPath = path.join(
+    SIDECAR_DIR,
+    `clash-verge-cli-${SIDECAR_HOST}${platform === 'win32' ? '.exe' : ''}`,
+  )
+
+  await fsp.mkdir(SIDECAR_DIR, { recursive: true })
+  await fsp.copyFile(sourcePath, targetPath)
+  if (platform !== 'win32') await fsp.chmod(targetPath, 0o755)
+  log_success(`Built CLI sidecar: ${path.basename(targetPath)}`)
+}
+
 // =======================
 // Version Cache
 // =======================
@@ -751,6 +778,7 @@ const resolveUnSetDnsScript = () =>
 // Tasks
 // =======================
 const tasks = [
+  { name: 'clash-verge-cli', func: buildCliSidecar, retry: 1 },
   {
     name: 'verge-mihomo-alpha',
     func: () =>
