@@ -709,3 +709,516 @@ clash-verge-cli profile list
 ### 为什么某些命令在 GUI 未运行时失败
 
 Core、系统代理、TUN、代理节点、连接、备份恢复和服务操作依赖 GUI 进程中的状态、插件或副作用管理，不能通过直接修改 YAML 安全完成。
+
+## 附录 A：修改版 Windows GUI 的构建、部署与启动
+
+本附录用于从当前仓库源码构建包含 CLI Bridge 的 Windows GUI，并将 GUI 与 `clash-verge-cli.exe` 一起部署到 Windows。
+
+### A.1 三类目录的区别
+
+构建和排查问题时，必须区分以下目录：
+
+| 目录 | 用途 | 典型路径 |
+| --- | --- | --- |
+| 源码目录 | Git 仓库、依赖和构建输出 | `C:\src\clash-verge-rev` |
+| 程序安装目录 | GUI、CLI 和 sidecar 可执行文件 | `C:\Program Files\Clash Verge` |
+| 应用数据目录 | YAML 配置、Profile、日志和 `.cli-token` | `%APPDATA%\io.github.clash-verge-rev.clash-verge-rev` |
+
+`clash-verge-cli app dir` 返回的是应用数据目录，不是 GUI 程序目录。因此该目录下没有 `clash-verge.exe` 是正常现象。
+
+### A.2 为什么必须重新构建 GUI
+
+CLI Bridge 运行在修改后的 GUI 后端中。官方原版或修改前的 Clash Verge Rev 不包含以下内容：
+
+- `/cli/v1/invoke` 本地控制接口。
+- `.cli-token` 生成和认证。
+- CLI 请求到共享 Service 的分发。
+
+因此，只复制新编译的 `clash-verge-cli.exe`，不能控制旧版 GUI。GUI 和 CLI 必须来自包含这些提交的同一份源码：
+
+```text
+2e02f3ec feat(cli): add authenticated GUI IPC bridge
+cf94580e refactor(cli): share GUI control services
+8c14095c feat(cli): expand GUI control commands
+20c0a872 build(cli): bundle Windows command-line controller
+```
+
+### A.3 Windows 构建环境
+
+推荐使用 Windows 10/11 x64，在 PowerShell 中构建。
+
+安装以下工具：
+
+1. Git for Windows。
+2. Node.js 24.x。项目发布流水线使用 Node.js `24.16.0`。
+3. pnpm `11.3.0`。
+4. Rust `1.95.0`，默认 MSVC toolchain。
+5. Visual Studio 2022 Build Tools。
+6. Microsoft Edge WebView2 Runtime。
+
+Visual Studio Installer 中至少选择：
+
+- `Desktop development with C++`。
+- MSVC v143 x64/x86 build tools。
+- Windows 10 或 Windows 11 SDK。
+
+安装 Rust：
+
+```powershell
+winget install Rustlang.Rustup
+rustup toolchain install 1.95.0
+rustup default 1.95.0
+rustup target add x86_64-pc-windows-msvc
+```
+
+安装 Node.js 和 pnpm：
+
+```powershell
+winget install OpenJS.NodeJS
+corepack enable
+corepack prepare pnpm@11.3.0 --activate
+```
+
+验证环境：
+
+```powershell
+git --version
+node --version
+pnpm --version
+rustc --version
+cargo --version
+```
+
+### A.4 获取并确认源码
+
+进入当前修改版仓库：
+
+```powershell
+cd C:\src\clash-verge-rev
+git status
+git log -6 --oneline
+```
+
+日志中应至少能看到前述 CLI Bridge、Service、命令覆盖和打包提交。
+
+如果源码位于 WSL 文件系统，建议复制或克隆到 Windows 本地 NTFS 目录后再执行 MSVC 构建。Windows 工具链直接构建 `\\wsl$` 路径可能遇到路径、权限或文件监听问题。
+
+### A.5 安装前端依赖
+
+```powershell
+pnpm install --frozen-lockfile
+```
+
+若锁文件与 `package.json` 正在开发中且确实不同步，可临时使用：
+
+```powershell
+pnpm install
+```
+
+正式构建推荐保持 `--frozen-lockfile`。
+
+### A.6 准备 Windows sidecar 和资源
+
+执行：
+
+```powershell
+pnpm prebuild x86_64-pc-windows-msvc
+```
+
+该步骤会：
+
+- 用 release 配置构建 `clash-verge-cli.exe`。
+- 将 CLI 复制为 Tauri sidecar 命名：
+  `src-tauri\sidecar\clash-verge-cli-x86_64-pc-windows-msvc.exe`。
+- 下载或复用 Windows x64 Mihomo sidecar。
+- 下载或复用 Clash Verge Service、GeoIP、GeoSite、MMDB 和 UWP 工具。
+
+确认 CLI sidecar：
+
+```powershell
+Test-Path .\src-tauri\sidecar\clash-verge-cli-x86_64-pc-windows-msvc.exe
+```
+
+预期输出：
+
+```text
+True
+```
+
+### A.7 构建无发布签名的本地安装包
+
+仓库配置了 updater 公钥。正式发布流水线通过私钥生成 updater 签名，但本地通常没有 `TAURI_SIGNING_PRIVATE_KEY`。
+
+本地测试构建应临时关闭 updater artifact：
+
+```powershell
+pnpm tauri build `
+  --target x86_64-pc-windows-msvc `
+  --bundles nsis `
+  --config '{"bundle":{"createUpdaterArtifacts":false}}'
+```
+
+该临时配置只关闭 updater 签名产物，不会关闭 CLI Bridge、CLI sidecar 或 NSIS 安装包。
+
+构建过程会自动执行前端 TypeScript 检查和 Vite production build，然后编译 GUI 后端并生成 NSIS。
+
+主要产物：
+
+```text
+target\x86_64-pc-windows-msvc\release\clash-verge.exe
+target\x86_64-pc-windows-msvc\release\clash-verge-cli.exe
+target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe
+```
+
+CLI 的 Tauri sidecar 源文件位于：
+
+```text
+src-tauri\sidecar\clash-verge-cli-x86_64-pc-windows-msvc.exe
+```
+
+实际文件名可能因 Tauri 版本和产品版本号略有差异，可用以下命令查找：
+
+```powershell
+Get-ChildItem .\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe
+Get-ChildItem .\target\x86_64-pc-windows-msvc\release\clash-verge*.exe
+```
+
+### A.8 构建前验证
+
+建议在安装前执行：
+
+```powershell
+cargo test -p clash-verge-cli-protocol -p clash-verge-cli
+cargo test -p clash-verge --lib
+cargo clippy -p clash-verge-cli-protocol -p clash-verge-cli -p clash-verge --lib -- -D warnings
+pnpm typecheck
+```
+
+再检查 Windows CLI 目标：
+
+```powershell
+cargo check -p clash-verge-cli --target x86_64-pc-windows-msvc
+```
+
+### A.9 部署前备份
+
+修改版使用与正式版相同的应用标识和应用数据目录，会读取现有配置。安装前建议创建备份。
+
+在原 GUI 中创建本地备份，或手工复制：
+
+```powershell
+$appData = Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev'
+Copy-Item $appData "$appData.backup-$(Get-Date -Format yyyyMMdd-HHmmss)" -Recurse
+```
+
+如果目录不存在，说明当前 Windows 用户尚未运行过该应用。
+
+### A.10 完全退出旧版 GUI
+
+从系统托盘菜单退出 Clash Verge Rev。关闭窗口不一定会退出后台进程。
+
+确认进程：
+
+```powershell
+Get-Process clash-verge -ErrorAction SilentlyContinue
+```
+
+正常情况下不应返回进程。如果托盘退出无效，可在确认配置已备份后执行：
+
+```powershell
+Stop-Process -Name clash-verge -Force
+```
+
+不要同时运行官方旧版和修改版，它们使用相同的单例端口和应用数据目录。
+
+### A.11 使用 NSIS 安装包部署
+
+推荐使用安装包，而不是单独复制 `clash-verge.exe`。GUI 运行还依赖 Mihomo、Service、资源文件和 CLI sidecar。
+
+找到并启动安装包：
+
+```powershell
+$installer = Get-ChildItem .\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe |
+  Select-Object -First 1
+Start-Process $installer.FullName -Verb RunAs -Wait
+```
+
+本地构建通常没有 Authenticode 代码签名，Windows SmartScreen 可能显示“未知发布者”。仅应安装自己从可信源码构建的产物；正式分发应使用受控的 Windows 代码签名流程。
+
+安装配置为 per-machine，通常安装到：
+
+```text
+C:\Program Files\Clash Verge
+```
+
+如果系统或安装选项使用了其他位置，可在启动后查询实际进程路径：
+
+```powershell
+(Get-Process clash-verge).Path
+```
+
+### A.12 启动修改版 GUI
+
+可以通过开始菜单中的 Clash Verge 快捷方式启动，也可以直接运行：
+
+```powershell
+Start-Process "$env:ProgramFiles\Clash Verge\clash-verge.exe"
+```
+
+如果安装目录不同：
+
+```powershell
+Start-Process "D:\Apps\Clash Verge\clash-verge.exe"
+```
+
+等待 GUI 完成初始化。首次启动可能需要初始化配置、启动 Core、创建托盘和生成认证令牌。
+
+确认运行的是修改版：
+
+```powershell
+$process = Get-Process clash-verge -ErrorAction Stop
+$process.Path
+```
+
+程序目录中应同时存在：
+
+```text
+clash-verge.exe
+clash-verge-cli.exe
+verge-mihomo.exe
+verge-mihomo-alpha.exe
+```
+
+具体服务文件名可能随版本变化。
+
+### A.13 验证 CLI Bridge
+
+先定位 CLI：
+
+```powershell
+$guiPath = (Get-Process clash-verge -ErrorAction Stop).Path
+$installDir = Split-Path $guiPath
+$cli = Join-Path $installDir 'clash-verge-cli.exe'
+Test-Path $cli
+```
+
+检查应用数据目录：
+
+```powershell
+& $cli app dir
+```
+
+检查令牌是否生成：
+
+```powershell
+$appData = & $cli app dir
+Test-Path (Join-Path $appData '.cli-token')
+```
+
+预期输出为 `True`。无需也不应打印令牌内容。
+
+测试 Bridge：
+
+```powershell
+& $cli --json status
+& $cli setting get enable_tun_mode
+& $cli setting set enable_tun_mode false
+```
+
+`status` 中的：
+
+```json
+{
+  "app": {
+    "running": true
+  }
+}
+```
+
+表示 CLI 已连接修改版 GUI，而不是使用离线配置回退。
+
+### A.14 将 CLI 加入 PATH
+
+仅对当前 PowerShell 会话生效：
+
+```powershell
+$installDir = Split-Path (Get-Process clash-verge -ErrorAction Stop).Path
+$env:PATH = "$installDir;$env:PATH"
+clash-verge-cli status
+```
+
+永久加入当前用户 PATH：
+
+```powershell
+$installDir = Split-Path (Get-Process clash-verge -ErrorAction Stop).Path
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($userPath -split ';') -notcontains $installDir) {
+    [Environment]::SetEnvironmentVariable(
+        'Path',
+        ($userPath.TrimEnd(';') + ';' + $installDir),
+        'User'
+    )
+}
+```
+
+重新打开 PowerShell 后生效。
+
+### A.15 不安装，直接运行 release 目录
+
+不推荐只运行单个 `clash-verge.exe`。如果需要免安装测试，应确保 GUI、CLI、Mihomo sidecar、服务和 resources 的相对布局与打包结果一致。
+
+最稳妥的免安装方式是先生成 NSIS 安装包并安装到测试目录。直接复制单个 GUI 文件会导致 Core、服务、图标、GeoIP 或 CLI 缺失。
+
+### A.16 开发调试模式
+
+开发 GUI 使用 `verge-dev` feature：
+
+```powershell
+pnpm prebuild x86_64-pc-windows-msvc
+pnpm dev
+```
+
+开发模式与 release 模式不同：
+
+| 项目 | Release | `verge-dev` |
+| --- | --- | --- |
+| 单例/Bridge 端口 | `33331` | `11233` |
+| 应用标识 | `io.github.clash-verge-rev.clash-verge-rev` | `io.github.clash-verge-rev.clash-verge-rev.dev` |
+| 数据目录 | 正式目录 | 以 `.dev` 结尾的开发目录 |
+
+普通 release CLI 默认连接端口 `33331`，不能连接 `pnpm dev` 启动的 GUI。调试开发 GUI 时，需要构建带相同 feature 的 CLI：
+
+```powershell
+cargo run -p clash-verge-cli --features verge-dev -- --json status
+cargo run -p clash-verge-cli --features verge-dev -- setting set enable_tun_mode false
+```
+
+也可先构建：
+
+```powershell
+cargo build -p clash-verge-cli --features verge-dev
+.\target\debug\clash-verge-cli.exe --json status
+```
+
+不要混用 release CLI 与开发 GUI。
+
+### A.17 正式发布签名
+
+正式发布构建不应关闭 updater artifact，而应在受控环境设置：
+
+```text
+TAURI_SIGNING_PRIVATE_KEY
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+```
+
+然后按项目 GitHub Actions 的 Windows MSVC 流程构建。不要把私钥写入仓库、脚本或 PowerShell 历史。
+
+本地没有发布私钥时，出现以下错误不代表 GUI 编译失败：
+
+```text
+A public key has been found, but no private key.
+```
+
+它表示主程序和安装包可能已经生成，但 updater 签名步骤无法完成。日常本地部署应使用 A.7 中关闭 updater artifact 的命令。
+
+### A.18 升级和回退
+
+升级修改版：
+
+1. 用 CLI 或 GUI 创建备份。
+2. 完全退出旧 GUI。
+3. 构建新的 NSIS 安装包。
+4. 覆盖安装。
+5. 启动 GUI 并运行 `clash-verge-cli --json status`。
+
+回退官方版：
+
+1. 创建并导出备份。
+2. 完全退出修改版。
+3. 卸载修改版。
+4. 安装目标官方版本。
+5. 仅在配置格式兼容时复用或恢复应用数据。
+
+由于修改版与官方版使用相同标识，回退前必须备份 `%APPDATA%` 中的数据。
+
+### A.19 Windows 构建与启动故障排查
+
+#### `cl.exe`、`link.exe` 或 Windows SDK 找不到
+
+安装 Visual Studio 2022 Build Tools 的 C++ Desktop workload，并重新打开 PowerShell。必要时使用 Developer PowerShell for VS 2022。
+
+#### `pnpm prebuild` 下载失败
+
+检查 GitHub 网络访问和代理设置。脚本会缓存已经下载的 Mihomo、Service 和规则资源，重试时通常不需要重新下载成功项。
+
+#### NSIS 构建成功但最后提示缺少私钥
+
+改用 A.7 中 `createUpdaterArtifacts: false` 的本地构建命令。
+
+#### 安装目录没有 `clash-verge-cli.exe`
+
+确认以下配置包含 `sidecar/clash-verge-cli`：
+
+```text
+src-tauri\tauri.conf.json
+src-tauri\tauri.windows.conf.json
+```
+
+并确认在 Tauri build 前执行过：
+
+```powershell
+pnpm prebuild x86_64-pc-windows-msvc
+```
+
+#### `.cli-token` 不存在
+
+依次检查：
+
+1. 运行的是修改版 GUI，而不是官方旧版。
+2. GUI 已完成初始化且没有立即退出。
+3. GUI 和 CLI 由同一个 Windows 用户运行。
+4. `clash-verge-cli app dir` 指向当前用户的正确数据目录。
+5. 便携版 GUI 和 CLI 是否位于同一个便携目录。
+
+#### `.cli-token` 存在但仍提示 Bridge 不可达
+
+检查 release Bridge 端口：
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 33331 -ErrorAction SilentlyContinue
+```
+
+如果没有监听：
+
+- GUI 可能不是修改版。
+- GUI 后端初始化可能失败。
+- 另一个旧进程可能占用了单例端口。
+
+确认进程路径并完全重启：
+
+```powershell
+Get-Process clash-verge -ErrorAction SilentlyContinue |
+  Select-Object Id, Path
+```
+
+#### GUI 已运行但 CLI 读取了错误目录
+
+检查是否混用了：
+
+- 不同 Windows 用户。
+- 正式版和 `verge-dev`。
+- 安装版和便携版。
+- 不同目录中的多个 `clash-verge-cli.exe`。
+
+查找实际执行的 CLI：
+
+```powershell
+Get-Command clash-verge-cli | Select-Object Source
+```
+
+推荐始终从 GUI 进程路径推导 CLI：
+
+```powershell
+$dir = Split-Path (Get-Process clash-verge -ErrorAction Stop).Path
+& (Join-Path $dir 'clash-verge-cli.exe') --json status
+```
