@@ -1029,6 +1029,7 @@ fn redact_value_inner(value: &mut Value) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

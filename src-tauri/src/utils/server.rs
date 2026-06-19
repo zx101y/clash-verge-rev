@@ -458,6 +458,7 @@ pub fn shutdown_embedded_server() {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
