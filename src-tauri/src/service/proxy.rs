@@ -159,6 +159,7 @@ pub async fn close_connection(id: Option<&str>) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
