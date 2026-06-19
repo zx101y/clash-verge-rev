@@ -48,6 +48,9 @@ Commands:
   network hostname|interfaces    Show host network information
   lightweight status|on|off      Control lightweight mode
   proxy groups                   List proxy groups and nodes
+  proxy nodes                    List node names and their groups
+  proxy test                     Test all nodes and sort by delay
+  proxy current                  Show current node for every group
   proxy select <group> <node>    Select a node for a proxy group
   connection list                List active connections
   connection close <id>|--all    Close connections (requires --yes)
@@ -132,6 +135,9 @@ enum Command {
         enabled: bool,
     },
     ProxyGroups,
+    ProxyNodes,
+    ProxyTest,
+    ProxyCurrent,
     ProxySelect {
         group: String,
         node: String,
@@ -372,6 +378,18 @@ fn run_inner(args: Vec<String>) -> CliResult<()> {
             let payload = bridge_call("proxy.groups", json!({}))?;
             emit(cli.format, payload.clone(), || human_value(&payload))
         }
+        Command::ProxyNodes => {
+            let payload = bridge_call("proxy.nodes", json!({}))?;
+            emit(cli.format, payload.clone(), || proxy_nodes_human(&payload))
+        }
+        Command::ProxyTest => {
+            let payload = bridge_call("proxy.test", json!({}))?;
+            emit(cli.format, payload.clone(), || proxy_delays_human(&payload))
+        }
+        Command::ProxyCurrent => {
+            let payload = bridge_call("proxy.current", json!({}))?;
+            emit(cli.format, payload.clone(), || proxy_delays_human(&payload))
+        }
         Command::ProxySelect { group, node } => {
             let payload = bridge_call("proxy.select", json!({ "group": group, "node": node }))?;
             emit(cli.format, payload, || format!("Proxy selected: {group} -> {node}"))
@@ -516,6 +534,9 @@ fn parse_args(args: Vec<String>) -> CliResult<Cli> {
         [cmd, sub] if cmd == "lightweight" && sub == "on" => Command::LightweightSet { enabled: true },
         [cmd, sub] if cmd == "lightweight" && sub == "off" => Command::LightweightSet { enabled: false },
         [cmd, sub] if cmd == "proxy" && sub == "groups" => Command::ProxyGroups,
+        [cmd, sub] if cmd == "proxy" && sub == "nodes" => Command::ProxyNodes,
+        [cmd, sub] if cmd == "proxy" && sub == "test" => Command::ProxyTest,
+        [cmd, sub] if cmd == "proxy" && sub == "current" => Command::ProxyCurrent,
         [cmd, sub, group, node] if cmd == "proxy" && sub == "select" => Command::ProxySelect {
             group: group.clone(),
             node: node.clone(),
@@ -799,6 +820,62 @@ where
 
 fn print_human(text: &str) {
     println!("{text}");
+}
+
+fn proxy_nodes_human(payload: &Value) -> String {
+    let Some(items) = payload.as_array() else {
+        return human_value(payload);
+    };
+    if items.is_empty() {
+        return "No proxy nodes found".to_string();
+    }
+
+    let group_width = items
+        .iter()
+        .filter_map(|item| item.get("group").and_then(Value::as_str))
+        .map(str::len)
+        .max()
+        .unwrap_or(5)
+        .max(5);
+    let mut lines = vec![format!("{:<group_width$}  NODE", "GROUP")];
+    lines.extend(items.iter().map(|item| {
+        let group = item.get("group").and_then(Value::as_str).unwrap_or("");
+        let node = item.get("node").and_then(Value::as_str).unwrap_or("");
+        format!("{group:<group_width$}  {node}")
+    }));
+    lines.join("\n")
+}
+
+fn proxy_delays_human(payload: &Value) -> String {
+    let Some(items) = payload.as_array() else {
+        return human_value(payload);
+    };
+    if items.is_empty() {
+        return "No proxy nodes found".to_string();
+    }
+
+    let group_width = items
+        .iter()
+        .filter_map(|item| item.get("group").and_then(Value::as_str))
+        .map(str::len)
+        .max()
+        .unwrap_or(5)
+        .max(5);
+    let node_width = items
+        .iter()
+        .filter_map(|item| item.get("node").and_then(Value::as_str))
+        .map(str::len)
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let mut lines = vec![format!("{:<group_width$}  {:<node_width$}  DELAY", "GROUP", "NODE")];
+    lines.extend(items.iter().map(|item| {
+        let group = item.get("group").and_then(Value::as_str).unwrap_or("");
+        let node = item.get("node").and_then(Value::as_str).unwrap_or("");
+        let delay = item.get("delay").and_then(Value::as_u64).unwrap_or_default();
+        format!("{group:<group_width$}  {node:<node_width$}  {delay} ms")
+    }));
+    lines.join("\n")
 }
 
 fn status_payload(snapshot: &ConfigSnapshot) -> Value {
@@ -1151,6 +1228,46 @@ mod tests {
                 ..
             } if password_env == "CVR_DAV_PASSWORD"
         ));
+    }
+
+    #[test]
+    fn parses_proxy_query_commands() {
+        assert!(matches!(
+            parse_args(vec!["proxy".into(), "nodes".into()])
+                .expect("parse proxy nodes")
+                .command,
+            Command::ProxyNodes
+        ));
+        assert!(matches!(
+            parse_args(vec!["proxy".into(), "test".into()])
+                .expect("parse proxy test")
+                .command,
+            Command::ProxyTest
+        ));
+        assert!(matches!(
+            parse_args(vec!["proxy".into(), "current".into()])
+                .expect("parse proxy current")
+                .command,
+            Command::ProxyCurrent
+        ));
+    }
+
+    #[test]
+    fn formats_proxy_node_tables() {
+        let nodes = json!([
+            { "group": "Group A", "node": "Node 1" },
+            { "group": "Group B", "node": "Node 2" }
+        ]);
+        let node_table = proxy_nodes_human(&nodes);
+        assert!(node_table.contains("GROUP"));
+        assert!(node_table.contains("Group A  Node 1"));
+
+        let delays = json!([
+            { "group": "Group A", "node": "Node 1", "delay": 42 }
+        ]);
+        let delay_table = proxy_delays_human(&delays);
+        assert!(delay_table.contains("DELAY"));
+        assert!(delay_table.contains("42 ms"));
     }
 
     #[test]

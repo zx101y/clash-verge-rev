@@ -234,6 +234,9 @@ async fn dispatch_cli_request(request: &CliRequest) -> Result<Value> {
             Ok(json!({ "changed": true, "enabled": enabled }))
         }
         "proxy.groups" => service::proxy::groups().await,
+        "proxy.nodes" => Ok(serde_json::to_value(service::proxy::nodes().await?)?),
+        "proxy.test" => Ok(serde_json::to_value(service::proxy::test_nodes().await?)?),
+        "proxy.current" => Ok(serde_json::to_value(service::proxy::current().await?)?),
         "proxy.select" => {
             service::proxy::select(
                 required_string(&request.params, "group")?,

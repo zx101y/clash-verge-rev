@@ -325,6 +325,92 @@ clash-verge-cli proxy select "Proxy Group" "Hong Kong 01"
 
 成功后会通知 GUI 刷新代理状态，并更新托盘菜单。
 
+### 9.3 查询所有节点及所属组
+
+```text
+clash-verge-cli proxy nodes
+clash-verge-cli --json proxy nodes
+```
+
+默认输出只包含组名称和节点名称：
+
+```text
+GROUP          NODE
+Auto Select    Hong Kong 01
+Auto Select    Singapore 01
+Proxy          Hong Kong 01
+Proxy          Japan 01
+```
+
+同一节点属于多个组时会显示多行。嵌套代理组不会被当作普通节点列出，但其内部的叶子节点会以实际所属组显示。
+
+JSON 示例：
+
+```json
+[
+  {
+    "group": "Proxy",
+    "node": "Hong Kong 01"
+  }
+]
+```
+
+### 9.4 测试所有节点延迟
+
+```text
+clash-verge-cli proxy test
+clash-verge-cli --json proxy test
+```
+
+CLI 对所有唯一节点执行实时延迟测试，再按延迟从小到大排列：
+
+```text
+GROUP          NODE            DELAY
+Proxy          Hong Kong 01    42 ms
+Auto Select    Singapore 01    68 ms
+Proxy          Offline Node    0 ms
+```
+
+测速规则：
+
+- 测试地址为 `https://www.gstatic.com/generate_204`。
+- 单节点超时为 5000 毫秒。
+- 最多并发测试 16 个唯一节点。
+- 同一节点出现在多个组中时只测速一次，再为每个所属组输出一行。
+- 延迟为 `0` 表示超时或测速失败，并排在所有有效延迟之后。
+
+节点较多时命令可能需要数秒完成。
+
+### 9.5 查询当前选择的节点
+
+```text
+clash-verge-cli proxy current
+clash-verge-cli --json proxy current
+```
+
+列出每个代理组当前选择的节点，并对当前节点进行实时延迟测试：
+
+```text
+GROUP          NODE            DELAY
+GLOBAL         DIRECT          1 ms
+Proxy          Hong Kong 01    42 ms
+Auto Select    Singapore 01    68 ms
+```
+
+JSON 示例：
+
+```json
+[
+  {
+    "group": "Proxy",
+    "node": "Hong Kong 01",
+    "delay": 42
+  }
+]
+```
+
+一个配置通常包含多个代理组，因此该命令可能返回多行，而不是单一节点。
+
 ## 10. 连接管理
 
 ### 10.1 列出活动连接
