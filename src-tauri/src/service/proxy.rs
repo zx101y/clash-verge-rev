@@ -16,13 +16,11 @@ const MAX_CONCURRENT_TESTS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeSummary {
-    pub groups: Vec<String>,
     pub node: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeDelay {
-    pub groups: Vec<String>,
     pub node: String,
     pub delay: u32,
 }
@@ -41,29 +39,20 @@ pub async fn groups() -> Result<Value> {
 }
 
 fn node_summaries(proxies: &Proxies) -> Vec<NodeSummary> {
-    let mut memberships = BTreeMap::<String, BTreeSet<String>>::new();
-    for (group_name, group) in &proxies.proxies {
-        let Some(nodes) = group.all.as_ref() else {
+    let mut unique_nodes = BTreeSet::new();
+    for group in proxies.proxies.values() {
+        let Some(group_nodes) = group.all.as_ref() else {
             continue;
         };
-        for node_name in nodes {
+        for node_name in group_nodes {
             let is_leaf = proxies.proxies.get(node_name).is_none_or(|proxy| proxy.all.is_none());
             if is_leaf {
-                memberships
-                    .entry(node_name.clone())
-                    .or_default()
-                    .insert(group_name.clone());
+                unique_nodes.insert(node_name.clone());
             }
         }
     }
 
-    memberships
-        .into_iter()
-        .map(|(node, groups)| NodeSummary {
-            groups: groups.into_iter().collect(),
-            node,
-        })
-        .collect()
+    unique_nodes.into_iter().map(|node| NodeSummary { node }).collect()
 }
 
 fn resolve_leaf_node(proxies: &Proxies, selected: &str) -> String {
@@ -188,7 +177,6 @@ pub async fn test_nodes() -> Result<Vec<NodeDelay>> {
         .into_iter()
         .map(|item| NodeDelay {
             delay: delays.get(&item.node).copied().unwrap_or_default(),
-            groups: item.groups,
             node: item.node,
         })
         .collect::<Vec<_>>();
@@ -297,18 +285,12 @@ mod tests {
     }
 
     #[test]
-    fn aggregates_groups_for_each_leaf_node() {
+    fn lists_each_leaf_node_once() {
         assert_eq!(
             node_summaries(&proxies()),
             vec![
-                NodeSummary {
-                    groups: vec!["Group A".into(), "Group B".into()],
-                    node: "Node 1".into(),
-                },
-                NodeSummary {
-                    groups: vec!["Group A".into(), "Nested".into()],
-                    node: "Node 2".into(),
-                },
+                NodeSummary { node: "Node 1".into() },
+                NodeSummary { node: "Node 2".into() },
             ]
         );
     }

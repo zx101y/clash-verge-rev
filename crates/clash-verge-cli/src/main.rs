@@ -830,19 +830,13 @@ fn proxy_nodes_human(payload: &Value) -> String {
         return "No proxy nodes found".to_string();
     }
 
-    let group_width = items
-        .iter()
-        .map(proxy_groups_label)
-        .map(|groups| groups.len())
-        .max()
-        .unwrap_or(6)
-        .max(6);
-    let mut lines = vec![format!("{:<group_width$}  NODE", "GROUPS")];
-    lines.extend(items.iter().map(|item| {
-        let group = proxy_groups_label(item);
-        let node = item.get("node").and_then(Value::as_str).unwrap_or("");
-        format!("{group:<group_width$}  {node}")
-    }));
+    let mut lines = vec!["NODE".to_string()];
+    lines.extend(
+        items
+            .iter()
+            .filter_map(|item| item.get("node").and_then(Value::as_str))
+            .map(str::to_string),
+    );
     lines.join("\n")
 }
 
@@ -854,13 +848,6 @@ fn proxy_delays_human(payload: &Value) -> String {
         return "No proxy nodes found".to_string();
     }
 
-    let group_width = items
-        .iter()
-        .map(proxy_groups_label)
-        .map(|groups| groups.len())
-        .max()
-        .unwrap_or(6)
-        .max(6);
     let node_width = items
         .iter()
         .filter_map(|item| item.get("node").and_then(Value::as_str))
@@ -868,12 +855,11 @@ fn proxy_delays_human(payload: &Value) -> String {
         .max()
         .unwrap_or(4)
         .max(4);
-    let mut lines = vec![format!("{:<group_width$}  {:<node_width$}  DELAY", "GROUPS", "NODE")];
+    let mut lines = vec![format!("{:<node_width$}  DELAY", "NODE")];
     lines.extend(items.iter().map(|item| {
-        let group = proxy_groups_label(item);
         let node = item.get("node").and_then(Value::as_str).unwrap_or("");
         let delay = item.get("delay").and_then(Value::as_u64).unwrap_or_default();
-        format!("{group:<group_width$}  {node:<node_width$}  {delay} ms")
+        format!("{node:<node_width$}  {delay} ms")
     }));
     lines.join("\n")
 }
@@ -886,13 +872,6 @@ fn proxy_current_human(payload: &Value) -> String {
     let node = payload.get("node").and_then(Value::as_str).unwrap_or("");
     let delay = payload.get("delay").and_then(Value::as_u64).unwrap_or_default();
     format!("GROUP  NODE  DELAY\n{group}  {node}  {delay} ms")
-}
-
-fn proxy_groups_label(item: &Value) -> String {
-    item.get("groups")
-        .and_then(Value::as_array)
-        .map(|groups| groups.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
-        .unwrap_or_default()
 }
 
 fn status_payload(snapshot: &ConfigSnapshot) -> Value {
@@ -1272,15 +1251,14 @@ mod tests {
     #[test]
     fn formats_proxy_node_tables() {
         let nodes = json!([
-            { "groups": ["Group A", "Group B"], "node": "Node 1" },
-            { "groups": ["Group C"], "node": "Node 2" }
+            { "node": "Node 1" },
+            { "node": "Node 2" }
         ]);
         let node_table = proxy_nodes_human(&nodes);
-        assert!(node_table.contains("GROUP"));
-        assert!(node_table.contains("Group A, Group B  Node 1"));
+        assert_eq!(node_table, "NODE\nNode 1\nNode 2");
 
         let delays = json!([
-            { "groups": ["Group A"], "node": "Node 1", "delay": 42 }
+            { "node": "Node 1", "delay": 42 }
         ]);
         let delay_table = proxy_delays_human(&delays);
         assert!(delay_table.contains("DELAY"));
