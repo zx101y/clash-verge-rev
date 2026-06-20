@@ -1,1 +1,1 @@
-9b6bd329dc1ae3951fa01f726649435bd0f622f40c9f8eee8c1f09c7427d68af  clash-verge-cli.exe
+bc240684bd3f4ac9a624d55e093dae66b4ea27f6a52c2db984132d58135da558  clash-verge-cli.exe

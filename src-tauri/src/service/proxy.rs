@@ -1,4 +1,7 @@
-use crate::core::{handle, tray::Tray};
+use crate::{
+    config::Config,
+    core::{handle, tray::Tray},
+};
 use anyhow::Result;
 use futures::{StreamExt as _, stream};
 use serde::Serialize;
@@ -12,14 +15,14 @@ const DEFAULT_TIMEOUT_MS: u32 = 5_000;
 const MAX_CONCURRENT_TESTS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NodeMembership {
-    pub group: String,
+pub struct NodeSummary {
+    pub groups: Vec<String>,
     pub node: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeDelay {
-    pub group: String,
+    pub groups: Vec<String>,
     pub node: String,
     pub delay: u32,
 }
@@ -37,36 +40,121 @@ pub async fn groups() -> Result<Value> {
     )?)
 }
 
-fn node_memberships(proxies: &Proxies) -> Vec<NodeMembership> {
-    let mut memberships = proxies
-        .proxies
-        .iter()
-        .filter_map(|(group_name, group)| {
-            group.all.as_ref().map(|nodes| {
-                nodes.iter().filter_map(|node_name| {
-                    let is_leaf = proxies.proxies.get(node_name).is_none_or(|proxy| proxy.all.is_none());
-                    is_leaf.then(|| NodeMembership {
-                        group: group_name.clone(),
-                        node: node_name.clone(),
-                    })
-                })
-            })
-        })
-        .flatten()
-        .collect::<Vec<_>>();
-    memberships.sort_by(|left, right| left.group.cmp(&right.group).then_with(|| left.node.cmp(&right.node)));
-    memberships.dedup();
+fn node_summaries(proxies: &Proxies) -> Vec<NodeSummary> {
+    let mut memberships = BTreeMap::<String, BTreeSet<String>>::new();
+    for (group_name, group) in &proxies.proxies {
+        let Some(nodes) = group.all.as_ref() else {
+            continue;
+        };
+        for node_name in nodes {
+            let is_leaf = proxies.proxies.get(node_name).is_none_or(|proxy| proxy.all.is_none());
+            if is_leaf {
+                memberships
+                    .entry(node_name.clone())
+                    .or_default()
+                    .insert(group_name.clone());
+            }
+        }
+    }
+
     memberships
+        .into_iter()
+        .map(|(node, groups)| NodeSummary {
+            groups: groups.into_iter().collect(),
+            node,
+        })
+        .collect()
 }
 
-fn current_nodes(proxies: &Proxies) -> Vec<(String, String)> {
-    let mut current = proxies
-        .proxies
+fn resolve_leaf_node(proxies: &Proxies, selected: &str) -> String {
+    let mut current = selected;
+    let mut visited = BTreeSet::new();
+    while visited.insert(current) {
+        let Some(next) = proxies
+            .proxies
+            .get(current)
+            .filter(|proxy| proxy.all.is_some())
+            .and_then(|proxy| proxy.now.as_deref())
+        else {
+            break;
+        };
+        current = next;
+    }
+    current.to_string()
+}
+
+fn primary_selection(proxies: &Proxies, mode: &str, group_order: &[String]) -> Option<(String, String)> {
+    if mode.eq_ignore_ascii_case("direct") {
+        return Some(("DIRECT".into(), "DIRECT".into()));
+    }
+    if mode.eq_ignore_ascii_case("global") {
+        let selected = proxies.proxies.get("GLOBAL")?.now.as_deref()?;
+        return Some(("GLOBAL".into(), resolve_leaf_node(proxies, selected)));
+    }
+
+    let mut groups = group_order
         .iter()
-        .filter_map(|(group, proxy)| proxy.now.as_ref().map(|node| (group.clone(), node.clone())))
+        .filter(|name| name.as_str() != "GLOBAL")
+        .filter(|name| {
+            proxies
+                .proxies
+                .get(name.as_str())
+                .is_some_and(|proxy| proxy.all.is_some())
+        })
+        .cloned()
         .collect::<Vec<_>>();
-    current.sort();
-    current
+    if groups.is_empty() {
+        groups = proxies
+            .proxies
+            .iter()
+            .filter(|(name, proxy)| name.as_str() != "GLOBAL" && proxy.all.is_some())
+            .map(|(name, _)| name.clone())
+            .collect();
+        groups.sort();
+    }
+    if groups.is_empty() {
+        let selected = proxies.proxies.get("GLOBAL")?.now.as_deref()?;
+        return Some(("GLOBAL".into(), resolve_leaf_node(proxies, selected)));
+    }
+
+    const PRIMARY_KEYWORDS: [&str; 5] = ["auto", "select", "proxy", "节点选择", "自动选择"];
+    let group = groups
+        .iter()
+        .find(|name| {
+            let lower = name.to_lowercase();
+            PRIMARY_KEYWORDS.iter().any(|keyword| lower.contains(keyword))
+        })
+        .or_else(|| groups.first())?;
+    let selected = proxies.proxies.get(group)?.now.as_deref()?;
+    Some((group.clone(), resolve_leaf_node(proxies, selected)))
+}
+
+async fn current_mode_and_group_order() -> (String, Vec<String>) {
+    let mode = Config::clash()
+        .await
+        .latest_arc()
+        .0
+        .get("mode")
+        .and_then(serde_yaml_ng::Value::as_str)
+        .unwrap_or("rule")
+        .into();
+    let order = Config::runtime()
+        .await
+        .latest_arc()
+        .config
+        .as_ref()
+        .and_then(|config| config.get("proxy-groups"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|group| group.get("name"))
+                .filter_map(serde_yaml_ng::Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    (mode, order)
 }
 
 async fn test_unique_nodes(nodes: impl IntoIterator<Item = String>) -> BTreeMap<String, u32> {
@@ -87,20 +175,20 @@ async fn test_unique_nodes(nodes: impl IntoIterator<Item = String>) -> BTreeMap<
     delays
 }
 
-pub async fn nodes() -> Result<Vec<NodeMembership>> {
+pub async fn nodes() -> Result<Vec<NodeSummary>> {
     let proxies = handle::Handle::mihomo().await.get_proxies().await?;
-    Ok(node_memberships(&proxies))
+    Ok(node_summaries(&proxies))
 }
 
 pub async fn test_nodes() -> Result<Vec<NodeDelay>> {
     let proxies = handle::Handle::mihomo().await.get_proxies().await?;
-    let memberships = node_memberships(&proxies);
-    let delays = test_unique_nodes(memberships.iter().map(|item| item.node.clone())).await;
-    let mut results = memberships
+    let nodes = node_summaries(&proxies);
+    let delays = test_unique_nodes(nodes.iter().map(|item| item.node.clone())).await;
+    let mut results = nodes
         .into_iter()
         .map(|item| NodeDelay {
             delay: delays.get(&item.node).copied().unwrap_or_default(),
-            group: item.group,
+            groups: item.groups,
             node: item.node,
         })
         .collect::<Vec<_>>();
@@ -108,23 +196,22 @@ pub async fn test_nodes() -> Result<Vec<NodeDelay>> {
         delay_sort_key(left.delay)
             .cmp(&delay_sort_key(right.delay))
             .then_with(|| left.node.cmp(&right.node))
-            .then_with(|| left.group.cmp(&right.group))
     });
     Ok(results)
 }
 
-pub async fn current() -> Result<Vec<CurrentNode>> {
+pub async fn current() -> Result<Option<CurrentNode>> {
     let proxies = handle::Handle::mihomo().await.get_proxies().await?;
-    let current = current_nodes(&proxies);
-    let delays = test_unique_nodes(current.iter().map(|(_, node)| node.clone())).await;
-    Ok(current
-        .into_iter()
-        .map(|(group, node)| CurrentNode {
-            delay: delays.get(&node).copied().unwrap_or_default(),
-            group,
-            node,
-        })
-        .collect())
+    let (mode, group_order) = current_mode_and_group_order().await;
+    let Some((group, node)) = primary_selection(&proxies, &mode, &group_order) else {
+        return Ok(None);
+    };
+    let delays = test_unique_nodes([node.clone()]).await;
+    Ok(Some(CurrentNode {
+        delay: delays.get(&node).copied().unwrap_or_default(),
+        group,
+        node,
+    }))
 }
 
 const fn delay_sort_key(delay: u32) -> u32 {
@@ -210,24 +297,16 @@ mod tests {
     }
 
     #[test]
-    fn lists_leaf_nodes_with_each_group_membership() {
+    fn aggregates_groups_for_each_leaf_node() {
         assert_eq!(
-            node_memberships(&proxies()),
+            node_summaries(&proxies()),
             vec![
-                NodeMembership {
-                    group: "Group A".into(),
+                NodeSummary {
+                    groups: vec!["Group A".into(), "Group B".into()],
                     node: "Node 1".into(),
                 },
-                NodeMembership {
-                    group: "Group A".into(),
-                    node: "Node 2".into(),
-                },
-                NodeMembership {
-                    group: "Group B".into(),
-                    node: "Node 1".into(),
-                },
-                NodeMembership {
-                    group: "Nested".into(),
+                NodeSummary {
+                    groups: vec!["Group A".into(), "Nested".into()],
                     node: "Node 2".into(),
                 },
             ]
@@ -235,14 +314,41 @@ mod tests {
     }
 
     #[test]
-    fn lists_current_choice_for_each_group() {
+    fn selects_one_primary_rule_group_and_resolves_nested_node() {
         assert_eq!(
-            current_nodes(&proxies()),
-            vec![
-                ("Group A".into(), "Node 1".into()),
-                ("Group B".into(), "Node 1".into()),
-                ("Nested".into(), "Node 2".into()),
-            ]
+            primary_selection(&proxies(), "rule", &["Nested".into(), "Group A".into()]),
+            Some(("Nested".into(), "Node 2".into()))
+        );
+    }
+
+    #[test]
+    fn global_mode_resolves_the_selected_group_to_a_leaf_node() {
+        let mut proxies = proxies();
+        proxies.proxies.insert(
+            "GLOBAL".into(),
+            serde_json::from_value(proxy("GLOBAL", "Selector", Some(vec!["Group A"]), Some("Group A")))
+                .expect("deserialize global"),
+        );
+        assert_eq!(
+            primary_selection(&proxies, "global", &[]),
+            Some(("GLOBAL".into(), "Node 1".into()))
+        );
+    }
+
+    #[test]
+    fn rule_mode_falls_back_to_global_when_no_rule_group_exists() {
+        let mut proxies = proxies();
+        proxies
+            .proxies
+            .retain(|name, _| matches!(name.as_str(), "Node 1" | "GLOBAL"));
+        proxies.proxies.insert(
+            "GLOBAL".into(),
+            serde_json::from_value(proxy("GLOBAL", "Selector", Some(vec!["Node 1"]), Some("Node 1")))
+                .expect("deserialize global"),
+        );
+        assert_eq!(
+            primary_selection(&proxies, "rule", &[]),
+            Some(("GLOBAL".into(), "Node 1".into()))
         );
     }
 

@@ -332,24 +332,26 @@ clash-verge-cli proxy nodes
 clash-verge-cli --json proxy nodes
 ```
 
-默认输出只包含组名称和节点名称：
+默认输出每个唯一节点一行，并将它所属的组聚合到 `GROUPS` 列：
 
 ```text
-GROUP          NODE
-Auto Select    Hong Kong 01
-Auto Select    Singapore 01
-Proxy          Hong Kong 01
-Proxy          Japan 01
+GROUPS                      NODE
+Auto Select, Proxy          Hong Kong 01
+Auto Select                 Singapore 01
+Proxy                       Japan 01
 ```
 
-同一节点属于多个组时会显示多行。嵌套代理组不会被当作普通节点列出，但其内部的叶子节点会以实际所属组显示。
+同一节点即使属于多个组也只显示一行。嵌套代理组不会被当作普通节点列出，但其内部的叶子节点会保留实际所属组。
 
 JSON 示例：
 
 ```json
 [
   {
-    "group": "Proxy",
+    "groups": [
+      "Auto Select",
+      "Proxy"
+    ],
     "node": "Hong Kong 01"
   }
 ]
@@ -365,10 +367,10 @@ clash-verge-cli --json proxy test
 CLI 对所有唯一节点执行实时延迟测试，再按延迟从小到大排列：
 
 ```text
-GROUP          NODE            DELAY
-Proxy          Hong Kong 01    42 ms
-Auto Select    Singapore 01    68 ms
-Proxy          Offline Node    0 ms
+GROUPS                      NODE            DELAY
+Auto Select, Proxy          Hong Kong 01    42 ms
+Auto Select                 Singapore 01    68 ms
+Proxy                       Offline Node    0 ms
 ```
 
 测速规则：
@@ -376,7 +378,7 @@ Proxy          Offline Node    0 ms
 - 测试地址为 `https://www.gstatic.com/generate_204`。
 - 单节点超时为 5000 毫秒。
 - 最多并发测试 16 个唯一节点。
-- 同一节点出现在多个组中时只测速一次，再为每个所属组输出一行。
+- 同一节点出现在多个组中时只测速一次，并将全部所属组聚合到同一行。
 - 延迟为 `0` 表示超时或测速失败，并排在所有有效延迟之后。
 
 节点较多时命令可能需要数秒完成。
@@ -388,28 +390,30 @@ clash-verge-cli proxy current
 clash-verge-cli --json proxy current
 ```
 
-列出每个代理组当前选择的节点，并对当前节点进行实时延迟测试：
+根据当前 Clash 模式确定主代理组，解析嵌套选择链直到实际叶子节点，并进行实时延迟测试。命令只返回一个当前节点：
 
 ```text
 GROUP          NODE            DELAY
-GLOBAL         DIRECT          1 ms
 Proxy          Hong Kong 01    42 ms
-Auto Select    Singapore 01    68 ms
 ```
 
 JSON 示例：
 
 ```json
-[
-  {
-    "group": "Proxy",
-    "node": "Hong Kong 01",
-    "delay": 42
-  }
-]
+{
+  "group": "Proxy",
+  "node": "Hong Kong 01",
+  "delay": 42
+}
 ```
 
-一个配置通常包含多个代理组，因此该命令可能返回多行，而不是单一节点。
+主代理组判定与 GUI 当前节点卡片保持一致：
+
+- `global` 模式使用 `GLOBAL`。
+- `direct` 模式使用 `DIRECT`。
+- `rule` 模式优先使用名称包含 `auto`、`select`、`proxy`、`节点选择` 或 `自动选择` 的组。
+- 没有匹配关键词时，使用运行时配置中的第一个非 `GLOBAL` 代理组。
+- 配置中没有任何非 `GLOBAL` 代理组时，回退到 `GLOBAL` 当前选择。
 
 ## 10. 连接管理
 

@@ -388,7 +388,7 @@ fn run_inner(args: Vec<String>) -> CliResult<()> {
         }
         Command::ProxyCurrent => {
             let payload = bridge_call("proxy.current", json!({}))?;
-            emit(cli.format, payload.clone(), || proxy_delays_human(&payload))
+            emit(cli.format, payload.clone(), || proxy_current_human(&payload))
         }
         Command::ProxySelect { group, node } => {
             let payload = bridge_call("proxy.select", json!({ "group": group, "node": node }))?;
@@ -832,14 +832,14 @@ fn proxy_nodes_human(payload: &Value) -> String {
 
     let group_width = items
         .iter()
-        .filter_map(|item| item.get("group").and_then(Value::as_str))
-        .map(str::len)
+        .map(proxy_groups_label)
+        .map(|groups| groups.len())
         .max()
-        .unwrap_or(5)
-        .max(5);
-    let mut lines = vec![format!("{:<group_width$}  NODE", "GROUP")];
+        .unwrap_or(6)
+        .max(6);
+    let mut lines = vec![format!("{:<group_width$}  NODE", "GROUPS")];
     lines.extend(items.iter().map(|item| {
-        let group = item.get("group").and_then(Value::as_str).unwrap_or("");
+        let group = proxy_groups_label(item);
         let node = item.get("node").and_then(Value::as_str).unwrap_or("");
         format!("{group:<group_width$}  {node}")
     }));
@@ -856,11 +856,11 @@ fn proxy_delays_human(payload: &Value) -> String {
 
     let group_width = items
         .iter()
-        .filter_map(|item| item.get("group").and_then(Value::as_str))
-        .map(str::len)
+        .map(proxy_groups_label)
+        .map(|groups| groups.len())
         .max()
-        .unwrap_or(5)
-        .max(5);
+        .unwrap_or(6)
+        .max(6);
     let node_width = items
         .iter()
         .filter_map(|item| item.get("node").and_then(Value::as_str))
@@ -868,14 +868,31 @@ fn proxy_delays_human(payload: &Value) -> String {
         .max()
         .unwrap_or(4)
         .max(4);
-    let mut lines = vec![format!("{:<group_width$}  {:<node_width$}  DELAY", "GROUP", "NODE")];
+    let mut lines = vec![format!("{:<group_width$}  {:<node_width$}  DELAY", "GROUPS", "NODE")];
     lines.extend(items.iter().map(|item| {
-        let group = item.get("group").and_then(Value::as_str).unwrap_or("");
+        let group = proxy_groups_label(item);
         let node = item.get("node").and_then(Value::as_str).unwrap_or("");
         let delay = item.get("delay").and_then(Value::as_u64).unwrap_or_default();
         format!("{group:<group_width$}  {node:<node_width$}  {delay} ms")
     }));
     lines.join("\n")
+}
+
+fn proxy_current_human(payload: &Value) -> String {
+    if payload.is_null() {
+        return "No current proxy node found".to_string();
+    }
+    let group = payload.get("group").and_then(Value::as_str).unwrap_or("");
+    let node = payload.get("node").and_then(Value::as_str).unwrap_or("");
+    let delay = payload.get("delay").and_then(Value::as_u64).unwrap_or_default();
+    format!("GROUP  NODE  DELAY\n{group}  {node}  {delay} ms")
+}
+
+fn proxy_groups_label(item: &Value) -> String {
+    item.get("groups")
+        .and_then(Value::as_array)
+        .map(|groups| groups.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default()
 }
 
 fn status_payload(snapshot: &ConfigSnapshot) -> Value {
@@ -1255,19 +1272,23 @@ mod tests {
     #[test]
     fn formats_proxy_node_tables() {
         let nodes = json!([
-            { "group": "Group A", "node": "Node 1" },
-            { "group": "Group B", "node": "Node 2" }
+            { "groups": ["Group A", "Group B"], "node": "Node 1" },
+            { "groups": ["Group C"], "node": "Node 2" }
         ]);
         let node_table = proxy_nodes_human(&nodes);
         assert!(node_table.contains("GROUP"));
-        assert!(node_table.contains("Group A  Node 1"));
+        assert!(node_table.contains("Group A, Group B  Node 1"));
 
         let delays = json!([
-            { "group": "Group A", "node": "Node 1", "delay": 42 }
+            { "groups": ["Group A"], "node": "Node 1", "delay": 42 }
         ]);
         let delay_table = proxy_delays_human(&delays);
         assert!(delay_table.contains("DELAY"));
         assert!(delay_table.contains("42 ms"));
+
+        let current = json!({ "group": "Group A", "node": "Node 1", "delay": 42 });
+        let current_table = proxy_current_human(&current);
+        assert!(current_table.contains("Group A  Node 1  42 ms"));
     }
 
     #[test]
